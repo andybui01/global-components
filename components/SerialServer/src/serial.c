@@ -33,6 +33,7 @@ typedef struct getchar_client {
 
 static client_t *clients = NULL;
 static int num_clients = 0;
+char gather_buf[BUFSIZE];
 
 static ps_io_ops_t io_ops;
 
@@ -291,16 +292,15 @@ static int serial_notify_recv(int client, virtqueue_device_t *queue)
     virtqueue_ring_object_t handle;
 
     while (virtqueue_get_available_buf(queue, &handle)) {
-        char temp_buf[BUFSIZE];
         size_t len = virtqueue_scattered_available_size(queue, &handle);
-        if (camkes_virtqueue_device_gather_copy_buffer(queue, &handle, (void *)temp_buf, len) < 0) {
+        if (camkes_virtqueue_device_gather_copy_buffer(queue, &handle, gather_buf, len) < 0) {
             ZF_LOGW("Dropping data for client %d: Can't gather vq buffer.", client);
             continue;
         }
 
         /* Print to serial */
         for (size_t i = 0; i < len; i++) {
-            char ch = temp_buf[i];
+            char ch = gather_buf[i];
             if (ch == '\n') {
                 internal_putchar(client, '\r');
             }
@@ -509,6 +509,7 @@ void pre_init(void)
     /* Start regular heartbeat of 500ms */
     timeout_periodic(0, 500000000);
     error = serial_unlock();
+    ZF_LOGF_IF(error, "Failed to unlock serial");
 }
 
 int virtqueue_init(void)
@@ -523,23 +524,31 @@ int virtqueue_init(void)
         virtqueue_device_t *vq_recv;
 
         vq_recv = malloc(sizeof(*vq_recv));
-        ZF_LOGF_IF(!vq_recv, "Unable to alloc recv camkes-virtqueue for client: %d", i);
+        if (!vq_recv) {
+            ZF_LOGE("Unable to alloc recv camkes-virtqueue for client: %d", i);
+            err = -1;
+            goto cleanup;
+        }
 
         vq_send = malloc(sizeof(*vq_send));
-        ZF_LOGF_IF(!vq_send, "Unable to alloc send camkes-virtqueue for client: %d", i);
+        if (!vq_send) {
+            ZF_LOGE("Unable to alloc send camkes-virtqueue for client: %d", i);
+            err = -1;
+            goto cleanup;
+        }
 
         /* Initialise read virtqueue */
         err = camkes_virtqueue_device_init(vq_recv, serial_layout[i].recv_id);
         if (err) {
             ZF_LOGE("Unable to initialise serial server recv virtqueue for client %d", i);
-            return err;
+            goto cleanup;
         }
 
         /* Initialise write virtqueue */
         err = camkes_virtqueue_driver_init(vq_send, serial_layout[i].send_id);
         if (err) {
             ZF_LOGE("Unable to initialise serial server send virtqueue for client %d", i);
-            return err;
+            goto cleanup;
         }
 
         clients[i].recv_queue = vq_recv;
@@ -547,6 +556,18 @@ int virtqueue_init(void)
     }
 
     return 0;
+
+cleanup:
+    for (int i = 0; i < num_clients; i++) {
+        if (clients[i].recv_queue) {
+            free(clients[i].recv_queue);
+        }
+        if (clients[i].send_queue) {
+            free(clients[i].send_queue);
+        }
+    }
+
+    return err;
 }
 
 void post_init(void)
