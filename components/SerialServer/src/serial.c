@@ -272,7 +272,7 @@ static void internal_putchar(int b, int c)
 static void serial_notify_free_send(virtqueue_driver_t *queue)
 {
     void *buf = NULL;
-    size_t buf_size = 0, wr_len = 0;
+    uint32_t buf_size = 0, wr_len = 0;
     vq_flags_t flag;
     virtqueue_ring_object_t handle;
     while (virtqueue_get_used_buf(queue, &handle, &wr_len)) {
